@@ -55,14 +55,12 @@ usage()
 {
 	echo "Usage: ${0}"
 	echo 'Helper script to bump the target kernel version, whilst keeping history.'
-	echo '    -c  Migrate config files (e.g. subtargets) only.'
-	echo "    -p  Optional Platform name (e.g. 'x86_64' [PLATFORM_NAME]"
-	echo "    -s  Source version of kernel (e.g. 'v6.1' [SOURCE_VERSION])"
-	echo "    -t  Target version of kernel (e.g. 'v6.6' [TARGET_VERSION]')"
+	echo "    -s  Source version of kernel (e.g. 'v6.1.21' [SOURCE_VERSION])"
+	echo "    -t  Target version of kernel (e.g. 'v6.1.26' [TARGET_VERSION]')"
 	echo
 	echo 'All options can also be passed in environment variables (listed between [BRACKETS]).'
-	echo 'Note that this script must be run from within the kernel source git repository.'
-	echo 'Example: scripts/kernel_bump.sh -p x86_64 -s v6.1 -t v6.6'
+	echo 'Note that this script must be run from within the Linux kernel git repository.'
+	echo 'Example: scripts/kernel_bump.sh -s v6.1.21 -t v6.1.26'
 }
 
 cleanup()
@@ -93,26 +91,12 @@ init()
 	trap cleanup EXIT HUP INT QUIT ABRT ALRM TERM
 }
 
-is_openwrt()
+add_stable_remote()
 {
-	if [ -f "/etc/openwrt_release" ]; then
-		return 0
-	else
-		return 1
+	if ! git remote | grep -q "stable"; then
+		git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 	fi
-}
-
-add_github_remote()
-{
-	if ! git remote | grep -q "import"; then
-		git remote add import https://github.com/torvalds/linux.git
-	fi
-	git fetch import --tags
-}
-
-fetch_tags()
-{
-	git fetch --tags import
+	git fetch stable --tags
 }
 
 select_kernel_version()
@@ -121,10 +105,17 @@ select_kernel_version()
 	local selected_version
 
 	echo "Available kernel ${version_type} versions:"
-	git tag -l | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V
+	git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V
 
-	read -p "Enter ${version_type} version (e.g., v6.1): " selected_version
+	read -p "Enter ${version_type} version (e.g., v6.1.21): " selected_version
 	echo "${selected_version}"
+}
+
+compare_versions()
+{
+	if [ "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1" ]; then
+		return 1
+	fi
 }
 
 bump_kernel()
@@ -137,20 +128,18 @@ bump_kernel()
 
 	git switch --force-create '__kernel_files_mover'
 
-	if [ "${config_only:-false}" != 'true' ]; then
-		# Move all source files from old version to new version
-		for _path in $(find . -type f -name "*-${source_version}*"); do
-			_target_path="${_path//-${source_version}/-${target_version}}"
-			if [ -e "${_target_path}" ]; then
-				e_err "Target '${_target_path}' already exists!"
-				exit 1
-			fi
+	# Move all source files from old version to new version
+	for _path in $(find . -type f -name "*-${source_version}*"); do
+		_target_path="${_path//-${source_version}/-${target_version}}"
+		if [ -e "${_target_path}" ]; then
+			e_err "Target '${_target_path}' already exists!"
+			exit 1
+		fi
 
-			git mv \
-				"${_path}" \
-				"${_target_path}"
-		done
-	fi
+		git mv \
+			"${_path}" \
+			"${_target_path}"
+	done
 
 	# Update configuration files
 	for _config in $(find . -type f -name "config-${source_version}*"); do
@@ -160,14 +149,14 @@ bump_kernel()
 
 	git commit \
 		--signoff \
-		--message "kernel: Bump kernel files from v${source_version} to v${target_version}" \
+		--message "kernel: Bump kernel files from ${source_version} to ${target_version}" \
 		--message 'This is an automatically generated commit.' \
 		--message 'When doing `git bisect`, consider `git bisect --skip`.'
 
 	git checkout 'HEAD~' .
 	git commit \
 		--signoff \
-		--message "kernel: Restore kernel files for v${source_version}" \
+		--message "kernel: Restore kernel files for ${source_version}" \
 		--message "$(printf "This is an automatically generated commit which aids following Kernel patch\nhistory, as git will see the move and copy as a rename thus defeating the\npurpose.\n\nFor the original discussion see:\nhttps://lists.openwrt.org/pipermail/openwrt-devel/2023-October/041673.html")"
 	git switch "${initial_branch:?Unable to switch back to original branch. Quitting.}"
 	GIT_EDITOR=true git merge --no-ff '__kernel_files_mover'
@@ -207,17 +196,11 @@ check_requirements()
 
 main()
 {
-	while getopts 'chp:s:t:' _options; do
+	while getopts 'hs:t:' _options; do
 		case "${_options}" in
-		'c')
-			config_only='true'
-			;;
 		'h')
 			usage
 			exit 0
-			;;
-		'p')
-			platform_name="${OPTARG}"
 			;;
 		's')
 			source_version="${OPTARG}"
@@ -237,28 +220,13 @@ main()
 	done
 	shift "$((OPTIND - 1))"
 
-	platform_name="${platform_name:-${PLATFORM_NAME:-}}"
 	source_version="${source_version:-${SOURCE_VERSION:-}}"
 	target_version="${target_version:-${TARGET_VERSION:-}}"
 
 	if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
-		if ! is_openwrt; then
-			add_github_remote
-			fetch_tags
-			if [ -z "${source_version:-}" ]; then
-				source_version=$(select_kernel_version "source")
-			fi
-			if [ -z "${target_version:-}" ]; then
-				target_version=$(select_kernel_version "target")
-			fi
-		fi
-
-		if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
-			e_err "Source (${source_version:-missing source version}) and target (${target_version:-missing target version}) versions need to be defined."
-			echo
-			usage
-			exit 1
-		fi
+		add_stable_remote
+		source_version="$(select_kernel_version "source")"
+		target_version="$(select_kernel_version "target")"
 	fi
 
 	check_requirements
