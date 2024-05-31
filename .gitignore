@@ -170,4 +170,4 @@ sphinx_*/
 /rust-project.json
 
 # Microsoft
-MSFT-Merge/
+/MSFT-Merge/*
