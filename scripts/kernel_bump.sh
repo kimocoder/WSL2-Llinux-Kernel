@@ -1,7 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Copyright (C) 2024 Olliver Schinagl <oliver@schinagl.nl>
 
 set -eu
 if [ -n "${DEBUG_TRACE_SH:-}" ] && \
@@ -18,8 +17,10 @@ REQUIRED_COMMANDS='
 	exit
 	git
 	printf
+	sed
 	set
 	shift
+	sort
 '
 
 _msg()
@@ -54,12 +55,14 @@ usage()
 {
 	echo "Usage: ${0}"
 	echo 'Helper script to bump the target kernel version, whilst keeping history.'
-	echo "    -p  Optional Platform name (e.g. 'ath79' [PLATFORM_NAME]"
+	echo '    -c  Migrate config files (e.g. subtargets) only.'
+	echo "    -p  Optional Platform name (e.g. 'x86_64' [PLATFORM_NAME]"
 	echo "    -s  Source version of kernel (e.g. 'v6.1' [SOURCE_VERSION])"
 	echo "    -t  Target version of kernel (e.g. 'v6.6' [TARGET_VERSION]')"
 	echo
 	echo 'All options can also be passed in environment variables (listed between [BRACKETS]).'
-	echo 'Example: scripts/kernel_bump.sh -p realtek -s v6.1 -t v6.6'
+	echo 'Note that this script must be run from within the kernel source git repository.'
+	echo 'Example: scripts/kernel_bump.sh -p x86_64 -s v6.1 -t v6.6'
 }
 
 cleanup()
@@ -74,76 +77,69 @@ cleanup()
 
 init()
 {
+	src_file="$(readlink -f "${0}")"
+	src_dir="${src_file%%"${src_file##*'/'}"}"
 	initial_branch="$(git rev-parse --abbrev-ref HEAD)"
 	initial_commitish="$(git rev-parse HEAD)"
+
+	if [ -n "$(git status --porcelain | grep -v '^?? .*')" ]; then
+		echo 'Git repository not in a clean state, will not continue.'
+		exit 1
+	fi
+
+	source_version="${source_version#v}"
+	target_version="${target_version#v}"
 
 	trap cleanup EXIT HUP INT QUIT ABRT ALRM TERM
 }
 
-do_source_target()
-{
-	_target_dir="${1:?Missing argument to function}"
-	_op="${2:?Missing argument to function}"
-
-}
-
 bump_kernel()
 {
-	platform_name="${platform_name##*'/'}"
-
-	if [ -z "${platform_name:-}" ]; then
-		platform_name="${PWD##*'/'}"
-	fi
-
-	if [ "${PWD##*'/'}" = "${platform_name}" ]; then
-		_target_dir='./'
-	else
-		_target_dir="target/linux/${platform_name}"
-	fi
-
-	if [ ! -d "${_target_dir}/image" ]; then
-		e_err 'Cannot find target linux directory.'
+	# Ensure we are in the root directory of the kernel source
+	if [ ! -f "Makefile" ] || ! grep -q "VERSION = " Makefile; then
+		e_err "This script must be run from the root of the kernel source directory."
 		exit 1
 	fi
 
-	git switch --force-create '__openwrt_kernel_files_mover'
+	git switch --force-create '__kernel_files_mover'
 
-	for _path in "${_target_dir}/"*; do
-		if [ ! -s "${_path}" ] || \
-		   [ "${_path}" = "${_path%%"-${source_version}"}" ]; then
-			continue
-		fi
+	if [ "${config_only:-false}" != 'true' ]; then
+		# Move all source files from old version to new version
+		for _path in $(find . -type f -name "*-${source_version}*"); do
+			_target_path="${_path//-${source_version}/-${target_version}}"
+			if [ -e "${_target_path}" ]; then
+				e_err "Target '${_target_path}' already exists!"
+				exit 1
+			fi
 
-		_target_path="${_path%%"-${source_version}"}-${target_version}"
-		if [ -s "${_target_path}" ]; then
-			e_err "Target '${_target_path}' already exists!"
-			exit 1
-		fi
+			git mv \
+				"${_path}" \
+				"${_target_path}"
+		done
+	fi
 
-		git mv \
-			"${_path}" \
-			"${_target_path}"
-	done
-
-	find "${_target_dir}" -iname "config-${source_version}" | while read -r _config; do
-		_path="${_config%%"/config-${source_version}"}"
-		git mv "${_config}" "${_path}/config-${target_version}"
+	# Update configuration files
+	for _config in $(find . -type f -name "config-${source_version}*"); do
+		_target_config="${_config//config-${source_version}/config-${target_version}}"
+		git mv "${_config}" "${_target_config}"
 	done
 
 	git commit \
 		--signoff \
-		--message "kernel/${platform_name}: Create kernel files for v${target_version} (from v${source_version})" \
+		--message "kernel: Bump kernel files from v${source_version} to v${target_version}" \
 		--message 'This is an automatically generated commit.' \
-		--message 'During a `git bisect` session, `git bisect --skip` is recommended.'
+		--message 'When doing `git bisect`, consider `git bisect --skip`.'
 
-	git checkout 'HEAD~' "${_target_dir}"
+	git checkout 'HEAD~' .
 	git commit \
 		--signoff \
-		--message "kernel/${platform_name}: Restore kernel files for v${source_version}" \
-		--message "$(printf "This is an automatically generated commit which aids following Kernel patch history,\nas git will see the move and copy as a rename thus defeating the purpose.\n\nSee: https://lists.openwrt.org/pipermail/openwrt-devel/2023-October/041673.html\nfor the original discussion.")"
+		--message "kernel: Restore kernel files for v${source_version}" \
+		--message "$(printf "This is an automatically generated commit which aids following Kernel patch\nhistory, as git will see the move and copy as a rename thus defeating the\npurpose.\n\nFor the original discussion see:\nhttps://lists.openwrt.org/pipermail/openwrt-devel/2023-October/041673.html")"
 	git switch "${initial_branch:?Unable to switch back to original branch. Quitting.}"
-	GIT_EDITOR=true git merge --no-ff '__openwrt_kernel_files_mover'
-	git branch --delete '__openwrt_kernel_files_mover'
+	GIT_EDITOR=true git merge --no-ff '__kernel_files_mover'
+	git branch --delete '__kernel_files_mover'
+	echo "Deleting merge commit ($(git rev-parse HEAD))."
+	git rebase HEAD~1
 
 	echo "Original commitish was '${initial_commitish}'."
 	echo 'Kernel bump complete. Remember to use `git log --follow`.'
@@ -177,8 +173,11 @@ check_requirements()
 
 main()
 {
-	while getopts 'hp:s:t:' _options; do
+	while getopts 'chp:s:t:' _options; do
 		case "${_options}" in
+		'c')
+			config_only='true'
+			;;
 		'h')
 			usage
 			exit 0
@@ -187,10 +186,10 @@ main()
 			platform_name="${OPTARG}"
 			;;
 		's')
-			source_version="${OPTARG#v}"
+			source_version="${OPTARG}"
 			;;
 		't')
-			target_version="${OPTARG#v}"
+			target_version="${OPTARG}"
 			;;
 		':')
 			e_err "Option -${OPTARG} requires an argument."
@@ -209,7 +208,9 @@ main()
 	target_version="${target_version:-${TARGET_VERSION:-}}"
 
 	if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
-		e_err "Source (${source_version}) and target (${target_version}) versions need to be defined."
+		e_err "Source (${source_version:-missing source version}) and target (${target_version:-missing target version}) versions need to be defined."
+		echo
+		usage
 		exit 1
 	fi
 
@@ -223,3 +224,4 @@ main()
 main "${@}"
 
 exit 0
+
