@@ -93,6 +93,40 @@ init()
 	trap cleanup EXIT HUP INT QUIT ABRT ALRM TERM
 }
 
+is_openwrt()
+{
+	if [ -f "/etc/openwrt_release" ]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+add_github_remote()
+{
+	if ! git remote | grep -q "torvalds"; then
+		git remote add torvalds https://github.com/torvalds/linux.git
+	fi
+	git fetch torvalds
+}
+
+fetch_tags()
+{
+	git fetch --tags torvalds
+}
+
+select_kernel_version()
+{
+	local version_type="${1}"
+	local selected_version
+
+	echo "Available kernel ${version_type} versions:"
+	git tag -l | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V
+
+	read -p "Enter ${version_type} version (e.g., v6.1): " selected_version
+	echo "${selected_version}"
+}
+
 bump_kernel()
 {
 	# Ensure we are in the root directory of the kernel source
@@ -208,10 +242,23 @@ main()
 	target_version="${target_version:-${TARGET_VERSION:-}}"
 
 	if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
-		e_err "Source (${source_version:-missing source version}) and target (${target_version:-missing target version}) versions need to be defined."
-		echo
-		usage
-		exit 1
+		if ! is_openwrt; then
+			add_github_remote
+			fetch_tags
+			if [ -z "${source_version:-}" ]; then
+				source_version=$(select_kernel_version "source")
+			fi
+			if [ -z "${target_version:-}" ]; then
+				target_version=$(select_kernel_version "target")
+			fi
+		fi
+
+		if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
+			e_err "Source (${source_version:-missing source version}) and target (${target_version:-missing target version}) versions need to be defined."
+			echo
+			usage
+			exit 1
+		fi
 	fi
 
 	check_requirements
