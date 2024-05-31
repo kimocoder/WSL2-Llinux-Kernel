@@ -77,15 +77,14 @@ init()
 	initial_branch="$(git rev-parse --abbrev-ref HEAD)"
 	initial_commitish="$(git rev-parse HEAD)"
 
-	if [ -n "$(git status --porcelain | grep -v '^?? .*')" ]; then
-		echo 'Git respository not in a clean state, will not continue.'
-		exit 1
-	fi
-
-	source_version="${source_version#v}"
-	target_version="${target_version#v}"
-
 	trap cleanup EXIT HUP INT QUIT ABRT ALRM TERM
+}
+
+do_source_target()
+{
+	_target_dir="${1:?Missing argument to function}"
+	_op="${2:?Missing argument to function}"
+
 }
 
 bump_kernel()
@@ -135,7 +134,7 @@ bump_kernel()
 		--signoff \
 		--message "kernel/${platform_name}: Create kernel files for v${target_version} (from v${source_version})" \
 		--message 'This is an automatically generated commit.' \
-		--message 'When doing `git bisect`, consider `git bisect --skip`.'
+		--message 'During a `git bisect` session, `git bisect --skip` is recommended.'
 
 	git checkout 'HEAD~' "${_target_dir}"
 	git commit \
@@ -188,10 +187,10 @@ main()
 			platform_name="${OPTARG}"
 			;;
 		's')
-			source_version="${OPTARG}"
+			source_version="${OPTARG#v}"
 			;;
 		't')
-			target_version="${OPTARG}"
+			target_version="${OPTARG#v}"
 			;;
 		':')
 			e_err "Option -${OPTARG} requires an argument."
@@ -210,9 +209,7 @@ main()
 	target_version="${target_version:-${TARGET_VERSION:-}}"
 
 	if [ -z "${source_version:-}" ] || [ -z "${target_version:-}" ]; then
-		e_err "Source (${source_version:-missing source version}) and target (${target_version:-missing target version}) versions need to be defined."
-		echo
-		usage
+		e_err "Source (${source_version}) and target (${target_version}) versions need to be defined."
 		exit 1
 	fi
 
