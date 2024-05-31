@@ -91,6 +91,14 @@ init()
 	trap cleanup EXIT HUP INT QUIT ABRT ALRM TERM
 }
 
+setup_git_config()
+{
+	if ! git config --get-all rebase >/dev/null; then
+		diff.colorMoved zebra
+		git config pull.rebase true
+	fi
+}
+
 add_stable_remote()
 {
 	if ! git remote | grep -q "stable"; then
@@ -196,6 +204,13 @@ check_requirements()
 
 main()
 {
+	# Check if it's the first run
+	if [ ! -f ".git/first_run" ]; then
+		setup_git_config
+		add_stable_remote
+		touch ".git/first_run"
+	fi
+
 	while getopts 'hs:t:' _options; do
 		case "${_options}" in
 		'h')
