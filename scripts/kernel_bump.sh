@@ -96,6 +96,7 @@ setup_git_config()
 	if ! git config --get-all rebase >/dev/null; then
 		diff.colorMoved zebra
 		git config pull.rebase true
+		git config advice.skippedCherryPicks false
 	fi
 }
 
