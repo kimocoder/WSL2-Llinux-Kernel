@@ -104,15 +104,15 @@ is_openwrt()
 
 add_github_remote()
 {
-	if ! git remote | grep -q "torvalds"; then
-		git remote add torvalds https://github.com/torvalds/linux.git
+	if ! git remote | grep -q "import"; then
+		git remote add import https://github.com/torvalds/linux.git
 	fi
-	git fetch torvalds
+	git fetch import --tags
 }
 
 fetch_tags()
 {
-	git fetch --tags torvalds
+	git fetch --tags import
 }
 
 select_kernel_version()
